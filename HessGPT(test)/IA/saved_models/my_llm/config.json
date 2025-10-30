@@ -1,0 +1,7 @@
+{
+  "vocab_size": 20000,
+  "embed_dim": 768,
+  "num_heads": 12,
+  "num_layers": 8,
+  "max_seq_len": 512
+}
