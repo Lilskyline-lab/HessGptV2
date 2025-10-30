@@ -1,3 +1,4 @@
+#transformer_block.py
 import torch
 import torch.nn as nn
 import sys
@@ -273,3 +274,4 @@ if __name__ == "__main__":
     print("\n📁 Fichier refactorisé avec imports depuis Attention/ et FeedForward/")
     print("🎯 Prochaine étape: Refactoriser Model/gpt2_model.py")
     print("="*60 + "\n")
+
