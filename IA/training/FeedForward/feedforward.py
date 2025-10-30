@@ -1,3 +1,4 @@
+#feedforward.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -240,4 +241,5 @@ if __name__ == "__main__":
     print("\n📁 Sauvegardez ce fichier dans: FeedForward/feedforward.py")
     print("🎯 Prochaine étape: Transformer Block (Semaine 5)")
     print("    → Combiner Attention + FFN + LayerNorm + Residual")
+
     print("="*60 + "\n")
