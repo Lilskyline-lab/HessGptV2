@@ -1681,3 +1681,4 @@ RÉSUMÉ DES CORRECTIONS APPLIQUÉES
    2. Vérifiez que HessGPT.forward() retourne bien (logits, hidden_states)
    3. Testez avec app.py après quelques époques
    4. Surveillez la validation du format au début de l'entraînement
+"""
