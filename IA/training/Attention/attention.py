@@ -1,3 +1,4 @@
+#attention.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -315,4 +316,5 @@ if __name__ == "__main__":
     print("="*60)
     print("\n📁 Sauvegardez ce fichier dans: Attention/attention.py")
     print("🎯 Prochaine étape: Feed-Forward Network (Semaine 4)")
+
     print("="*60 + "\n")
