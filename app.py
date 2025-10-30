@@ -1,3 +1,5 @@
+#app.py
+
 import os
 import json
 import torch
@@ -68,11 +70,11 @@ def load_model_and_tokenizer():
 
         print("🤖 Initialisation du modèle...")
         model = HessGPT(
-            vocab_size=config.get("vocab_size", 20000),
-            embed_dim=config.get("embed_dim", 256),
-            num_heads=config.get("num_heads", 8),
-            num_layers=config.get("num_layers", 4),
-            max_seq_len=config.get("max_seq_len", 512)
+            vocab_size=config["vocab_size"],
+            embed_dim=config["embed_dim"],
+            num_heads=config["num_heads"],
+            num_layers=config["num_layers"],
+            max_seq_len=config["max_seq_len"]
         )
 
         model_file = os.path.join(model_dir, "model.pt")
@@ -112,57 +114,134 @@ def generate_response(prompt, max_new_tokens=40, temperature=0.9, top_k=0, top_p
 
     input_ids = torch.tensor([tokens], dtype=torch.long, device=device)
     generated_ids = input_ids[0].tolist()
+    
+    print(f"\n🎬 Génération démarrée:")
+    print(f"   📝 Prompt tokens: {len(tokens)}")
+    print(f"   🎯 Max new tokens: {max_new_tokens}")
 
     with torch.no_grad():
         for step in range(max_new_tokens):
-            inp = torch.tensor([generated_ids[-model.max_seq_len:]], device=device)
-            logits, _ = model(inp)
-            next_logits = logits[0, -1, :].float()
+            # Préparer l'input (garder seulement les derniers max_seq_len tokens)
+            context_tokens = generated_ids[-model.max_seq_len:]
+            inp = torch.tensor([context_tokens], dtype=torch.long, device=device)
             
-            # Debug: afficher les top 5 tokens prédits au premier step
-            if step == 0:
-                top_vals, top_ids = torch.topk(next_logits, 5)
-                print(f"   🎯 Top 5 tokens prédits: {top_ids.tolist()} (logits: {top_vals.tolist()})")
-
-            if repetition_penalty != 1.0:
-                for t in set(generated_ids):
-                    next_logits[t] = next_logits[t] / repetition_penalty
-
-            if temperature != 1.0 and temperature > 0:
-                next_logits = next_logits / temperature
-
-            if top_k is not None and top_k > 0:
-                values, indices = torch.topk(next_logits, min(top_k, next_logits.size(0)))
-                probs = torch.softmax(values, dim=-1)
-                next_id = int(indices[torch.multinomial(probs, num_samples=1)].item())
-            elif top_p is not None and 0.0 < top_p < 1.0:
-                probs = torch.softmax(next_logits, dim=-1)
-                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                cumulative = torch.cumsum(sorted_probs, dim=-1)
-                cutoff = (cumulative <= top_p).cpu().numpy()
-                if not cutoff.any():
-                    cutoff[0] = True
-                allowed = sorted_indices[cutoff]
-                allowed_probs = probs[allowed]
-                allowed_probs = allowed_probs / allowed_probs.sum()
-                next_id = int(allowed[torch.multinomial(allowed_probs, num_samples=1)].item())
+            # Forward pass - CORRECTION: le modèle retourne (logits, loss)
+            # Pendant l'inférence, loss sera None
+            output = model(inp)
+            
+            # Gérer le cas où model() retourne un tuple ou juste logits
+            if isinstance(output, tuple):
+                logits = output[0]  # Premier élément est logits
             else:
-                probs = torch.softmax(next_logits, dim=-1)
+                logits = output
+            
+            # Vérifier la forme des logits
+            if logits.dim() != 3:
+                print(f"⚠️ Forme de logits invalide: {logits.shape}")
+                break
+            
+            # Extraire les logits pour le dernier token
+            next_logits = logits[0, -1, :].clone()
+            
+            # Debug: afficher les statistiques des logits
+            if step == 0:
+                print(f"   📊 Logits stats: min={next_logits.min():.2f}, max={next_logits.max():.2f}, mean={next_logits.mean():.2f}")
+                print(f"   🔍 Logits contient NaN: {torch.isnan(next_logits).any()}")
+                print(f"   🔍 Logits contient Inf: {torch.isinf(next_logits).any()}")
+            
+            # Vérifier les NaN/Inf
+            if torch.isnan(next_logits).any() or torch.isinf(next_logits).any():
+                print(f"⚠️ Logits invalides détectés au step {step}")
+                break
+            
+            # Appliquer la pénalité de répétition
+            if repetition_penalty != 1.0:
+                for token_id in set(generated_ids):
+                    if 0 <= token_id < len(next_logits):
+                        if next_logits[token_id] > 0:
+                            next_logits[token_id] /= repetition_penalty
+                        else:
+                            next_logits[token_id] *= repetition_penalty
+            
+            # Appliquer la température
+            if temperature > 0 and temperature != 1.0:
+                next_logits = next_logits / temperature
+            
+            # Calculer les probabilités
+            probs = torch.softmax(next_logits, dim=-1)
+            
+            # Vérifier que les probs sont valides
+            if torch.isnan(probs).any() or (probs.sum() == 0):
+                print(f"⚠️ Probabilités invalides au step {step}")
+                break
+            
+            # Sampling avec top-k ou top-p
+            if top_k is not None and top_k > 0:
+                # Top-k sampling
+                k = min(top_k, probs.size(-1))
+                top_probs, top_indices = torch.topk(probs, k)
+                top_probs = top_probs / top_probs.sum()  # Renormaliser
+                sampled_idx = torch.multinomial(top_probs, num_samples=1)
+                next_id = int(top_indices[sampled_idx].item())
+            elif top_p is not None and 0.0 < top_p < 1.0:
+                # Top-p (nucleus) sampling
+                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
+                
+                # Trouver le cutoff
+                mask = cumsum_probs <= top_p
+                if not mask.any():
+                    mask[0] = True  # Garder au moins le top token
+                
+                # Sélectionner les tokens
+                filtered_probs = sorted_probs * mask.float()
+                filtered_probs = filtered_probs / filtered_probs.sum()
+                
+                sampled_idx = torch.multinomial(filtered_probs, num_samples=1)
+                next_id = int(sorted_indices[sampled_idx].item())
+            else:
+                # Sampling sans filtrage
                 next_id = int(torch.multinomial(probs, num_samples=1).item())
-
+            
+            # Debug: afficher le token sélectionné
+            if step < 3:  # Afficher les 3 premiers tokens
+                old = silence_output()
+                try:
+                    token_text = tokenizer.decoder([next_id])
+                finally:
+                    restore_output(old)
+                print(f"   🎲 Step {step}: token_id={next_id}, text='{token_text}', prob={probs[next_id]:.4f}")
+            
+            # Ajouter le token généré
             generated_ids.append(next_id)
+            
+            # Vérifier les conditions d'arrêt (token de fin, etc.)
+            # Vous pouvez ajouter une vérification pour un token EOS si vous en avez un
+            # if next_id == tokenizer.eos_token_id:
+            #     break
 
+    # Décoder le texte généré
     old = silence_output()
     try:
         text = tokenizer.decoder(generated_ids)
     finally:
         restore_output(old)
+    
+    print(f"✅ Génération terminée: {len(generated_ids) - len(tokens)} nouveaux tokens")
 
+    # Nettoyer la réponse
     if "Bot:" in text:
-        return text.split("Bot:")[-1].strip()
-    if prompt in text:
-        return text[len(prompt):].strip()
-    return text.strip()
+        response = text.split("Bot:")[-1].strip()
+    elif prompt in text:
+        response = text[len(prompt):].strip()
+    else:
+        response = text.strip()
+    
+    # Nettoyer les réponses vides ou invalides
+    if not response or len(response) < 2:
+        response = "[Le modèle n'a pas généré de réponse valide]"
+    
+    return response
 
 @app.route('/')
 def index():
@@ -205,6 +284,11 @@ def chat():
         })
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Erreur dans /api/chat:")
+        print(error_trace)
+        
         return jsonify({
             'error': str(e),
             'success': False
