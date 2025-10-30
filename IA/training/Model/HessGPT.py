@@ -1,4 +1,4 @@
-#HessGPT.py - VERSION CORRIGÉE
+#HessGPT.py - VERSION CORRIGÉE AVEC GÉNÉRATION FIXÉE
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,7 +13,9 @@ from TransformerBlock.transformer_block import TransformerBlock
 class HessGPT(nn.Module):
     """
     Modèle HessGPT - Architecture Transformer personnalisée
-    VERSION CORRIGÉE : Retourne (logits, hidden_states) au lieu de (logits, loss)
+    VERSION CORRIGÉE : 
+    - Retourne (logits, hidden_states)
+    - Génération avec masquage des tokens invalides
     """
     def __init__(
         self,
@@ -69,7 +71,7 @@ class HessGPT(nn.Module):
     
     def forward(self, input_ids, attention_mask=None):
         """
-        CORRECTION CRITIQUE : Retourne (logits, hidden_states) pour compatibilité LoRA
+        Forward pass - Retourne (logits, hidden_states)
         
         Args:
             input_ids: [batch_size, seq_len]
@@ -100,7 +102,6 @@ class HessGPT(nn.Module):
         # 5. Output Head
         logits = self.output_head(hidden_states)
         
-        # ⭐ CORRECTION : Retourner (logits, hidden_states) au lieu de (logits, loss)
         return logits, hidden_states
     
     def create_causal_mask(self, seq_len, device):
@@ -127,9 +128,18 @@ class HessGPT(nn.Module):
         )
         return loss
     
-    def generate(self, input_ids, max_new_tokens=50, temperature=1.0, top_k=None, top_p=0.9, repetition_penalty=1.0):
+    def generate(
+        self, 
+        input_ids, 
+        max_new_tokens=50, 
+        temperature=1.0, 
+        top_k=None, 
+        top_p=0.9, 
+        repetition_penalty=1.0,
+        valid_token_ids=None
+    ):
         """
-        Génération de texte (autoregressive) - VERSION CORRIGÉE
+        🔧 GÉNÉRATION CORRIGÉE - Masque les tokens invalides
         
         Args:
             input_ids: [batch_size, seq_len]
@@ -138,6 +148,7 @@ class HessGPT(nn.Module):
             top_k: Top-k sampling
             top_p: Nucleus sampling
             repetition_penalty: Pénalité pour tokens répétés
+            valid_token_ids: Set/List des IDs valides du tokenizer (NOUVEAU)
         
         Returns:
             generated_ids: [batch_size, seq_len + max_new_tokens]
@@ -145,27 +156,58 @@ class HessGPT(nn.Module):
         self.eval()
         
         generated = input_ids.clone()
+        device = input_ids.device
+        
+        # 🔧 Créer le masque de tokens invalides une seule fois
+        if valid_token_ids is not None:
+            invalid_mask = torch.ones(self.vocab_size, dtype=torch.bool, device=device)
+            valid_ids_list = list(valid_token_ids) if isinstance(valid_token_ids, set) else valid_token_ids
+            invalid_mask[valid_ids_list] = False
+        else:
+            invalid_mask = None
         
         with torch.no_grad():
-            for _ in range(max_new_tokens):
+            for step in range(max_new_tokens):
                 # Tronquer si trop long
                 input_ids_cond = generated if generated.size(1) <= self.max_seq_len else generated[:, -self.max_seq_len:]
                 
-                # Forward pass - ⭐ UTILISE LA NOUVELLE SIGNATURE
+                # Forward pass
                 logits, _ = self.forward(input_ids_cond)
                 
                 # Prendre les logits du dernier token
                 next_logits = logits[:, -1, :] / temperature
                 
-                # Appliquer repetition penalty
+                # 🔧 CORRECTION 1 : Masquer les tokens INVALIDES EN PREMIER
+                if invalid_mask is not None:
+                    next_logits[:, invalid_mask] = -float('inf')
+                
+                # Appliquer repetition penalty (seulement sur tokens valides)
                 if repetition_penalty != 1.0:
                     for token_id in set(generated[0].tolist()):
-                        next_logits[0, token_id] /= repetition_penalty
+                        if token_id < self.vocab_size:
+                            # Ne pénaliser que si le token n'est pas déjà masqué
+                            if invalid_mask is None or not invalid_mask[token_id]:
+                                next_logits[0, token_id] /= repetition_penalty
                 
                 # Top-k sampling
                 if top_k is not None and top_k > 0:
-                    v, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
-                    next_logits[next_logits < v[:, [-1]]] = -float('inf')
+                    # Compter les tokens non-masqués
+                    non_masked = (next_logits[0] > -float('inf')).sum().item()
+                    effective_top_k = min(top_k, non_masked)
+                    
+                    if effective_top_k > 0:
+                        v, _ = torch.topk(next_logits, effective_top_k)
+                        next_logits[next_logits < v[:, [-1]]] = -float('inf')
+                
+                # 🔧 CORRECTION 2 : Vérifier qu'il reste des tokens valides
+                if torch.all(torch.isinf(next_logits)):
+                    # Fallback : prendre le premier token valide
+                    if valid_token_ids is not None and len(valid_token_ids) > 0:
+                        next_token = torch.tensor([[min(valid_token_ids)]], device=device)
+                    else:
+                        next_token = torch.tensor([[0]], device=device)
+                    generated = torch.cat([generated, next_token], dim=1)
+                    continue
                 
                 # Softmax
                 probs = F.softmax(next_logits, dim=-1)
@@ -182,10 +224,34 @@ class HessGPT(nn.Module):
                     
                     indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
                     probs[indices_to_remove] = 0.0
-                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                    
+                    # Renormaliser
+                    probs_sum = probs.sum(dim=-1, keepdim=True)
+                    if probs_sum > 0:
+                        probs = probs / probs_sum
+                    else:
+                        # Fallback si tout est masqué
+                        probs = torch.zeros_like(probs)
+                        if valid_token_ids is not None:
+                            probs[0, min(valid_token_ids)] = 1.0
+                        else:
+                            probs[0, 0] = 1.0
                 
-                # Sampler le prochain token
-                next_token = torch.multinomial(probs, num_samples=1)
+                # 🔧 CORRECTION 3 : Vérifier que probs n'est pas vide
+                if probs.sum() == 0:
+                    if valid_token_ids is not None and len(valid_token_ids) > 0:
+                        next_token = torch.tensor([[min(valid_token_ids)]], device=device)
+                    else:
+                        next_token = torch.tensor([[0]], device=device)
+                else:
+                    # Sampler le prochain token
+                    next_token = torch.multinomial(probs, num_samples=1)
+                
+                # 🔧 CORRECTION 4 : Vérification finale du token généré
+                token_id = next_token.item()
+                if valid_token_ids is not None and token_id not in valid_token_ids:
+                    # Le token est invalide, forcer un token valide
+                    next_token = torch.tensor([[min(valid_token_ids)]], device=device)
                 
                 # Ajouter à la séquence
                 generated = torch.cat([generated, next_token], dim=1)
@@ -216,7 +282,6 @@ def test_hessgpt_forward():
     
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
     
-    # ⭐ VÉRIFIER LA NOUVELLE SIGNATURE
     logits, hidden_states = model(input_ids)
     
     print(f"✓ Input shape: {input_ids.shape}")
@@ -228,16 +293,15 @@ def test_hessgpt_forward():
     
     print(f"\n✅ Forward corrigé : retourne bien (logits, hidden_states)")
     
-    # Test de la loss séparée
     targets = torch.randint(0, vocab_size, (batch_size, seq_len))
     loss = model.compute_loss(logits, targets)
     print(f"✓ Loss: {loss.item():.4f}")
 
 
-def test_generation_fixed():
-    """Test de génération avec nouvelle API"""
+def test_generation_with_valid_ids():
+    """Test de génération avec valid_token_ids"""
     print("\n" + "="*60)
-    print("TEST: Génération (CORRIGÉE)")
+    print("TEST: Génération avec masquage tokens invalides")
     print("="*60)
     
     vocab_size = 300
@@ -251,27 +315,41 @@ def test_generation_fixed():
     
     prompt = torch.randint(0, vocab_size, (1, 5))
     
-    print(f"✓ Prompt: {prompt[0].tolist()}")
+    # Simuler un vocabulaire avec des trous
+    # Seulement les IDs 0-99 et 200-250 sont valides
+    valid_token_ids = set(range(100)) | set(range(200, 251))
     
-    # Génération avec nouveaux paramètres
+    print(f"✓ Prompt: {prompt[0].tolist()}")
+    print(f"✓ Tokens valides: {len(valid_token_ids)} IDs")
+    
+    # Génération AVEC valid_token_ids
     generated = model.generate(
         prompt,
         max_new_tokens=10,
         temperature=0.9,
         top_k=50,
         top_p=0.9,
-        repetition_penalty=1.2
+        repetition_penalty=1.2,
+        valid_token_ids=valid_token_ids  # 🔧 NOUVEAU
     )
     
-    print(f"✓ Generated: {generated[0].tolist()}")
-    print(f"✓ Longueur: {generated.shape[1]} tokens")
+    generated_ids = generated[0].tolist()
+    print(f"✓ Generated: {generated_ids}")
+    
+    # Vérifier qu'aucun ID invalide n'a été généré
+    invalid_ids = [id for id in generated_ids if id not in valid_token_ids]
+    
+    if invalid_ids:
+        print(f"❌ IDs invalides générés: {invalid_ids}")
+    else:
+        print(f"✅ Tous les IDs générés sont valides!")
 
 
 if __name__ == "__main__":
     print("\n🚀 TESTS DU MODÈLE HessGPT CORRIGÉ\n")
     
     test_hessgpt_forward()
-    test_generation_fixed()
+    test_generation_with_valid_ids()
     
     print("\n" + "="*60)
     print("✅ TOUS LES TESTS PASSÉS!")
@@ -279,5 +357,6 @@ if __name__ == "__main__":
     print("\n💡 Changements principaux:")
     print("   1. forward() retourne (logits, hidden_states)")
     print("   2. compute_loss() séparé pour entraînement")
-    print("   3. generate() mis à jour avec nouvelle signature")
+    print("   3. generate() avec valid_token_ids pour masquer tokens invalides")
+    print("   4. Gestion robuste des cas limites (probs vides, tokens invalides)")
     print("="*60 + "\n")
