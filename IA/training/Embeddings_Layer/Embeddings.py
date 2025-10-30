@@ -1,3 +1,4 @@
+#Embeddings.py
 import torch
 import torch.nn as nn
 
@@ -59,4 +60,5 @@ if __name__ == "__main__":
     
     print(f"Input shape: {input_ids.shape}")
     print(f"Output shape: {output.shape}")
+
     print(f"✓ Ça marche!")
