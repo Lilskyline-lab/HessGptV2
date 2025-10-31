@@ -25,8 +25,8 @@ from torch.optim import AdamW
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from Model.gpt2_model import GPT2Model
-from Tokenizer.tokenizer5k import MYBPE
+from Model.HessGPT import HessGPT
+from Tokenizer.tokenizerv2 import MYBPE
 
 try:
     from datasets import load_dataset
