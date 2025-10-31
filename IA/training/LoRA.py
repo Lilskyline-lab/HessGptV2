@@ -63,20 +63,20 @@ class LoRAConfig:
 
 @dataclass
 class TrainingConfig:
-    """Training Configuration - Full English"""
-    # Dataset counts (English only)
-    hh_rlhf_count: int = 5000
-    ultrachat_count: int = 6000
-    oasst2_count: int = 2000
-    xlam_count: int = 3000
-    glaive_count: int = 2000
+    """Training Configuration - FAST Mini Train"""
+    # Dataset counts (REDUCED for fast training)
+    hh_rlhf_count: int = 1000      # 5000 → 1000 (conversations)
+    ultrachat_count: int = 1500    # 6000 → 1500 (general chat)
+    oasst2_count: int = 500        # 2000 → 500  (English only)
+    xlam_count: int = 0            # 3000 → 0    (skip gated dataset)
+    glaive_count: int = 1000       # 2000 → 1000 (function calling)
     
     validation_split: float = 0.1
     
-    epochs: int = 3
-    batch_size: int = 8
+    epochs: int = 2                # 3 → 2 (faster)
+    batch_size: int = 16           # 8 → 16 (faster with more memory)
     grad_accum_steps: int = 2
-    learning_rate: float = 3e-4
+    learning_rate: float = 5e-4    # 3e-4 → 5e-4 (learn faster)
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     
@@ -1123,25 +1123,25 @@ def main():
     )
     
     training_config = TrainingConfig(
-        hh_rlhf_count=5000,
-        ultrachat_count=6000,
-        oasst2_count=2000,
-        xlam_count=3000,
-        glaive_count=2000,
-        epochs=3,
-        batch_size=8,
-        learning_rate=3e-4
+        hh_rlhf_count=1000,      # Mini dataset
+        ultrachat_count=1500,
+        oasst2_count=500,
+        xlam_count=0,            # Skip gated
+        glaive_count=1000,
+        epochs=2,                # Fast training
+        batch_size=16,           # Bigger batches (you have 22GB VRAM)
+        learning_rate=5e-4       # Learn faster
     )
     
     print("\n🔧 Configuration:")
     print(f"  LoRA: rank={lora_config.rank}, alpha={lora_config.alpha}")
     print(f"  Training: epochs={training_config.epochs}, batch={training_config.batch_size}")
     print(f"  Learning rate: {training_config.learning_rate}")
-    print(f"\n📊 English Datasets:")
+    print(f"\n📊 English Datasets (MINI TRAIN):")
     print(f"  - Anthropic HH-RLHF: {training_config.hh_rlhf_count}")
     print(f"  - UltraChat: {training_config.ultrachat_count}")
     print(f"  - OASST2 (EN): {training_config.oasst2_count}")
-    print(f"  - XLAM Function: {training_config.xlam_count}")
+    print(f"  - XLAM Function: {training_config.xlam_count} (skipped - gated)")
     print(f"  - Glaive Function: {training_config.glaive_count}")
     total = sum([
         training_config.hh_rlhf_count,
@@ -1151,6 +1151,7 @@ def main():
         training_config.glaive_count
     ])
     print(f"  Total target: ~{total} examples (100% English)")
+    print(f"  ⚡ FAST MODE: 2 epochs, batch_size=16, lr=5e-4")
     
     try:
         trainer = LoRATrainer(
